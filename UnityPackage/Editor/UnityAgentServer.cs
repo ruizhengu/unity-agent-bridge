@@ -4,6 +4,7 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using UnityEditor;
 using UnityEngine;
 using System.Reflection;
@@ -13,11 +14,33 @@ public class UnityAgentServer
 {
     private static HttpListener listener;
     private static Thread serverThread;
+    private static ConcurrentQueue<Action> mainThreadActions = new ConcurrentQueue<Action>();
+    private static volatile bool isCompiling = false;
+    private static List<CompileError> cachedErrors = new List<CompileError>();
+    private static DateTime lastLogCheck = DateTime.MinValue;
 
     static UnityAgentServer()
     {
+        EditorApplication.update += OnUpdate;
         StartServer();
         AppDomain.CurrentDomain.DomainUnload += (s, e) => { StopServer(); };
+    }
+
+    private static void OnUpdate()
+    {
+        isCompiling = EditorApplication.isCompiling;
+        
+        // Cache errors periodically so they are always ready for the local server
+        if ((DateTime.Now - lastLogCheck).TotalSeconds > 1f)
+        {
+            UpdateCachedErrors();
+            lastLogCheck = DateTime.Now;
+        }
+
+        while (mainThreadActions.TryDequeue(out Action action))
+        {
+            try { action?.Invoke(); } catch (Exception e) { Debug.LogError(e); }
+        }
     }
 
     private static void StartServer()
@@ -45,6 +68,7 @@ public class UnityAgentServer
 
     private static void StopServer()
     {
+        EditorApplication.update -= OnUpdate;
         if (listener != null)
         {
             try { listener.Stop(); } catch { }
@@ -80,14 +104,18 @@ public class UnityAgentServer
         {
             if (context.Request.Url.AbsolutePath == "/compile-errors")
             {
-                var errors = GetCompileErrors();
-                string json = ConvertToJsonArray(errors);
-                byte[] buffer = Encoding.UTF8.GetBytes(json);
-
-                context.Response.ContentType = "application/json";
-                context.Response.ContentLength64 = buffer.Length;
-                context.Response.OutputStream.Write(buffer, 0, buffer.Length);
-                context.Response.OutputStream.Close();
+                // Just return whatever the main thread has cached
+                string json = ConvertToJsonArray(cachedErrors);
+                SendJsonResponse(context, json);
+            }
+            else if (context.Request.Url.AbsolutePath == "/refresh")
+            {
+                mainThreadActions.Enqueue(() => { AssetDatabase.Refresh(); });
+                SendJsonResponse(context, "{\"status\":\"ok\"}");
+            }
+            else if (context.Request.Url.AbsolutePath == "/ping")
+            {
+                SendJsonResponse(context, "{\"isCompiling\":" + (isCompiling ? "true" : "false") + "}");
             }
             else
             {
@@ -107,6 +135,15 @@ public class UnityAgentServer
         }
     }
 
+    private static void SendJsonResponse(HttpListenerContext context, string json)
+    {
+        byte[] buffer = Encoding.UTF8.GetBytes(json);
+        context.Response.ContentType = "application/json";
+        context.Response.ContentLength64 = buffer.Length;
+        context.Response.OutputStream.Write(buffer, 0, buffer.Length);
+        context.Response.OutputStream.Close();
+    }
+
     private class CompileError
     {
         public string File;
@@ -114,82 +151,73 @@ public class UnityAgentServer
         public string Message;
     }
 
-    private static List<CompileError> GetCompileErrors()
+    private static void UpdateCachedErrors()
     {
         var errors = new List<CompileError>();
         
         try
         {
-            // Use reflection to access UnityEditor.LogEntries to get console errors
             var logEntriesType = Type.GetType("UnityEditor.LogEntries, UnityEditor.dll");
-            if (logEntriesType == null) return errors;
-
+            if (logEntriesType == null) return;
             var getCountsByTypeMethod = logEntriesType.GetMethod("GetCountsByType", BindingFlags.Static | BindingFlags.Public);
-            if (getCountsByTypeMethod == null) return errors;
-
+            if (getCountsByTypeMethod == null) return;
             var startGettingEntriesMethod = logEntriesType.GetMethod("StartGettingEntries", BindingFlags.Static | BindingFlags.Public);
-            if (startGettingEntriesMethod == null) return errors;
-
+            if (startGettingEntriesMethod == null) return;
             var getEntryInternalMethod = logEntriesType.GetMethod("GetEntryInternal", BindingFlags.Static | BindingFlags.Public);
-            if (getEntryInternalMethod == null) return errors;
-
+            if (getEntryInternalMethod == null) return;
             var endGettingEntriesMethod = logEntriesType.GetMethod("EndGettingEntries", BindingFlags.Static | BindingFlags.Public);
-            if (endGettingEntriesMethod == null) return errors;
-
+            if (endGettingEntriesMethod == null) return;
             var logEntryType = Type.GetType("UnityEditor.LogEntry, UnityEditor.dll");
-            if (logEntryType == null) return errors;
+            if (logEntryType == null) return;
 
             object logEntry = Activator.CreateInstance(logEntryType);
-            
             var modeField = logEntryType.GetField("mode", BindingFlags.Instance | BindingFlags.Public);
             var messageField = logEntryType.GetField("message", BindingFlags.Instance | BindingFlags.Public);
             var fileField = logEntryType.GetField("file", BindingFlags.Instance | BindingFlags.Public);
             var lineField = logEntryType.GetField("line", BindingFlags.Instance | BindingFlags.Public);
 
-            int errorCount = 0;
-            int warningCount = 0;
-            int logCount = 0;
+            int errorCount = 0, warningCount = 0, logCount = 0;
             object[] countsArgs = new object[] { errorCount, warningCount, logCount };
             getCountsByTypeMethod.Invoke(null, countsArgs);
 
-            int entries = (int)startGettingEntriesMethod.Invoke(null, null);
+            int entries = 0;
+            int retries = 0;
+            while (retries < 4)
+            {
+                entries = (int)startGettingEntriesMethod.Invoke(null, null);
+                if (entries > 0) break;
+                endGettingEntriesMethod.Invoke(null, null);
+                Thread.Sleep(250);
+                retries++;
+            }
 
             for (int i = 0; i < entries; i++)
             {
                 getEntryInternalMethod.Invoke(null, new object[] { i, logEntry });
 
                 int mode = (int)modeField.GetValue(logEntry);
+                string message = (string)messageField.GetValue(logEntry);
+                string file = (string)fileField.GetValue(logEntry);
+                int line = (int)lineField.GetValue(logEntry);
+
+                bool isCompileError = (mode == 272384) || message.Contains("error CS") || message.Contains("Assets/");
                 
-                // Identify compile errors via mode bitmask (includes generic errors and script compile errors)
-                bool isError = (mode & (1 | 2 | 16 | 32 | 512 | 1024)) != 0;
-
-                if (isError)
+                if (isCompileError)
                 {
-                    string file = (string)fileField.GetValue(logEntry);
-                    int line = (int)lineField.GetValue(logEntry);
-                    string message = (string)messageField.GetValue(logEntry);
-
-                    // We only care about errors that have an associated file
-                    if (!string.IsNullOrEmpty(file))
+                    if (!string.IsNullOrEmpty(file) && !message.StartsWith("Unity Agent Server"))
                     {
-                        errors.Add(new CompileError
-                        {
-                            File = file,
-                            Line = line,
-                            Message = message
-                        });
+                        errors.Add(new CompileError { File = file, Line = line, Message = message });
                     }
                 }
             }
 
             endGettingEntriesMethod.Invoke(null, null);
+            cachedErrors = errors; // Atomically swap reference
         }
         catch (Exception e)
         {
             Debug.LogError("Error parsing Unity logs: " + e.Message);
         }
-
-        return errors;
     }
 
     private static string ConvertToJsonArray(List<CompileError> errors)

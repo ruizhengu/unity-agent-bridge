@@ -31,4 +31,4 @@ unity-agent-cli check
 
 ## AI Agent Integration
 
-Place the included `.claudecode-example` (or integrate its contents into your AI configuration) inside your project root. AI coding assistants fundamentally require Unix exit codes to dictate autonomous workflows. By pinging `unity-agent-cli`, agents can natively identify success (exit code `0`) or read terminal-dumped stack-traces containing compilation failures (exit code `1`), ensuring they rapidly self-correct any generated syntax anomalies.
+Place the included `GEMINI.md` into your AI's configuration directory. For terminal agents like Gemini CLI or Antigravity, put it inside an `.agents/` folder at your project root. For IDE-based agents like Cursor, rename it to `.cursorrules` and place it in the root. AI coding assistants fundamentally require Unix exit codes to dictate autonomous workflows. By pinging `unity-agent-cli`, agents can natively identify success (exit code `0`) or read terminal-dumped stack-traces containing compilation failures (exit code `1`), ensuring they rapidly self-correct any generated syntax anomalies.
