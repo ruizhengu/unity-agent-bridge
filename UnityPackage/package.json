@@ -1,0 +1,16 @@
+{
+    "name": "com.unityagentbridge.server",
+    "version": "0.1.0",
+    "displayName": "Unity Agent Bridge",
+    "description": "Exposes an HTTP server for terminal-based AI agents to query active compilation errors directly from the Unity Editor.",
+    "unity": "2021.3",
+    "author": {
+        "name": "Ruizhen Gu"
+    },
+    "keywords": [
+        "ai",
+        "agent",
+        "compiler",
+        "errors"
+    ]
+}

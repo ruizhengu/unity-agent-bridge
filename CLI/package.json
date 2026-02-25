@@ -1,0 +1,21 @@
+{
+  "name": "unity-agent-cli",
+  "version": "0.1.0",
+  "description": "CLI tool for AI agents to natively detect Unity compilation errors.",
+  "main": "index.js",
+  "bin": {
+    "unity-agent-cli": "./index.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "unity",
+    "ai",
+    "agent",
+    "compile",
+    "errors"
+  ],
+  "author": "Ruizhen Gu",
+  "license": "ISC"
+}
