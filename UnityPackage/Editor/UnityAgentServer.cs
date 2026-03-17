@@ -45,8 +45,19 @@ public class UnityAgentServer
 
     private static void StartServer()
     {
-        if (listener != null && listener.IsListening)
+        // Check if already running by testing if we can bind to the port
+        if (IsPortInUse(5142))
+        {
+            // Port is already in use - check if it's our server
+            if (listener != null && listener.IsListening)
+            {
+                Debug.Log("Unity Agent Server already running on http://127.0.0.1:5142/");
+                return;
+            }
+            // Port is in use by another process - don't kill it, just skip
+            Debug.LogWarning("Port 5142 is already in use by another process. Unity Agent Server will not start.");
             return;
+        }
 
         try
         {
@@ -57,12 +68,27 @@ public class UnityAgentServer
             serverThread = new Thread(ListenForRequests);
             serverThread.IsBackground = true;
             serverThread.Start();
-            
+
             Debug.Log("Unity Agent Server started on http://127.0.0.1:5142/");
         }
         catch (Exception e)
         {
             Debug.LogError("Failed to start Unity Agent Server: " + e.Message);
+        }
+    }
+
+    private static bool IsPortInUse(int port)
+    {
+        try
+        {
+            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            listener.Start();
+            listener.Stop();
+            return false;
+        }
+        catch
+        {
+            return true;
         }
     }
 
