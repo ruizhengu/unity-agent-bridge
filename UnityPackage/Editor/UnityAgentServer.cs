@@ -45,25 +45,20 @@ public class UnityAgentServer
 
     private static void StartServer()
     {
-        // Check if already running by testing if we can bind to the port
-        if (IsPortInUse(5142))
+        if (listener != null && listener.IsListening)
         {
-            // Port is already in use - check if it's our server
-            if (listener != null && listener.IsListening)
-            {
-                Debug.Log("Unity Agent Server already running on http://127.0.0.1:5142/");
-                return;
-            }
-            // Port is in use by another process - don't kill it, just skip
-            Debug.LogWarning("Port 5142 is already in use by another process. Unity Agent Server will not start.");
+            Debug.Log("Unity Agent Server already running on http://127.0.0.1:5142/");
             return;
         }
 
+        HttpListener newListener = null;
         try
         {
-            listener = new HttpListener();
-            listener.Prefixes.Add("http://127.0.0.1:5142/");
-            listener.Start();
+            // Starting the real listener is the only atomic way to check and claim the port.
+            newListener = new HttpListener();
+            newListener.Prefixes.Add("http://127.0.0.1:5142/");
+            newListener.Start();
+            listener = newListener;
 
             serverThread = new Thread(ListenForRequests);
             serverThread.IsBackground = true;
@@ -71,24 +66,17 @@ public class UnityAgentServer
 
             Debug.Log("Unity Agent Server started on http://127.0.0.1:5142/");
         }
+        catch (HttpListenerException e)
+        {
+            try { newListener?.Close(); } catch { }
+            listener = null;
+            Debug.LogWarning("Port 5142 is already in use. Unity Agent Server will not start: " + e.Message);
+        }
         catch (Exception e)
         {
+            try { newListener?.Close(); } catch { }
+            listener = null;
             Debug.LogError("Failed to start Unity Agent Server: " + e.Message);
-        }
-    }
-
-    private static bool IsPortInUse(int port)
-    {
-        try
-        {
-            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
-            listener.Start();
-            listener.Stop();
-            return false;
-        }
-        catch
-        {
-            return true;
         }
     }
 
